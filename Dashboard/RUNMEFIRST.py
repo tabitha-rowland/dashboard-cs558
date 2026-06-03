@@ -16,3 +16,5 @@ with open('oregon_counties.geojson', 'w') as f:
     json.dump(geo, f)
 
 print("Saved filtered oregon_counties.geojson")
+
+# OK now go run app.py and open the ip address in your browser to see the dashboard
