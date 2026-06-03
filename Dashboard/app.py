@@ -3,6 +3,8 @@ from dash import dcc, html, Input, Output, State, ALL, ctx
 import plotly.express as px
 import pandas as pd
 import json
+import plotly.graph_objects as go
+import numpy as np
 
 # === LOAD DATA ===
 with open('oregon_counties.geojson') as f:
@@ -133,6 +135,18 @@ app.layout = html.Div([
         ], style={'width': '59%', 'display': 'inline-block'})
     ]),
 
+    html.Hr(),
+
+    # Bottom row: ridge plot
+    html.Div([
+        html.H3("Large-Fire (≥100 acres) Ignition Timing by Year",
+                style={'textAlign': 'center'}),
+        html.Div("Colored by average drought severity that year",
+                 style={'textAlign': 'center', 'fontSize': '12px',
+                        'color': '#666', 'marginBottom': '10px'}),
+        dcc.Graph(id='ridge-plot')
+    ]),
+
     dcc.Store(id='selected-cause', data=None)
 ], style={'fontFamily': 'sans-serif'})
 
@@ -256,6 +270,105 @@ def update_fire_points(year_range, selected_cause):
     )
     fig.update_layout(margin={'r':0, 't':0, 'l':0, 'b':0})
     return fig, title
+
+@app.callback(
+    Output('ridge-plot', 'figure'),
+    Input('year-slider', 'value')
+)
+def update_ridge_plot(year_range):
+    filtered = df[(df['FireYear'] >= year_range[0]) &
+                  (df['FireYear'] <= year_range[1]) &
+                  (df['EstTotalAcres'] >= 100)].copy()
+    filtered['IgnDate'] = pd.to_datetime(filtered['IgnDate'], errors='coerce')
+    filtered['DayOfYear'] = filtered['IgnDate'].dt.dayofyear
+    filtered = filtered.dropna(subset=['DayOfYear'])
+
+    years = sorted(filtered['FireYear'].unique())
+    
+    fig = go.Figure()
+    
+    for i, year in enumerate(years):
+        year_data = filtered[filtered['FireYear'] == year]
+        if len(year_data) < 3:
+            continue
+        
+        # Color by drought severity (green → yellow → orange → red gradient)
+        avg_dsci = year_data['DSCI'].mean()
+        intensity = min(avg_dsci / 250, 1.0)  # 250+ DSCI = max red
+        
+        if intensity < 0.33:
+            # Green to yellow
+            t = intensity / 0.33
+            r, g, b = int(100 + 155 * t), int(180 + 75 * t), int(100 - 50 * t)
+        elif intensity < 0.66:
+            # Yellow to orange
+            t = (intensity - 0.33) / 0.33
+            r, g, b = 255, int(255 - 100 * t), int(50 - 30 * t)
+        else:
+            # Orange to deep red
+            t = (intensity - 0.66) / 0.34
+            r, g, b = int(255 - 75 * t), int(155 - 130 * t), int(20)
+        
+        fill_color = f'rgba({r}, {g}, {b}, 0.7)'
+        line_color = f'rgba({max(0, r-60)}, {max(0, g-60)}, {max(0, b-30)}, 1)'
+        
+        # KDE for the year's ignition days
+        days = year_data['DayOfYear'].values
+        x_grid = np.linspace(1, 366, 200)
+        bandwidth = 12
+        density = np.zeros_like(x_grid)
+        for d in days:
+            density += np.exp(-0.5 * ((x_grid - d) / bandwidth) ** 2)
+        if density.max() > 0:
+            density = density / density.max() * 0.9  # scale ridge height
+        
+        # Baseline trace (invisible, for fill reference)
+        fig.add_trace(go.Scatter(
+            x=x_grid,
+            y=np.full_like(x_grid, i),
+            mode='lines',
+            line=dict(width=0),
+            showlegend=False,
+            hoverinfo='skip'
+        ))
+        
+        # The ridge with fill + outline
+        fig.add_trace(go.Scatter(
+            x=x_grid,
+            y=density + i,
+            fill='tonexty',
+            mode='lines',
+            line=dict(color=line_color, width=1.5),
+            fillcolor=fill_color,
+            name=str(year),
+            hovertemplate=f"Year: {year}<br>Avg DSCI: {avg_dsci:.0f}<extra></extra>"
+        ))
+    
+    month_starts = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
+    month_labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    
+    fig.update_layout(
+        xaxis=dict(
+            title='Day of Year',
+            tickvals=month_starts,
+            ticktext=month_labels,
+            range=[1, 366],
+            gridcolor='#eee'
+        ),
+        yaxis=dict(
+            title='Year',
+            tickvals=list(range(len(years))),
+            ticktext=[str(y) for y in years],
+            range=[-0.5, len(years) + 0.5],
+            gridcolor='#eee'
+        ),
+        showlegend=False,
+        height=700,
+        margin=dict(l=60, r=20, t=20, b=40),
+        plot_bgcolor='white'
+    )
+    return fig
 
 
 if __name__ == '__main__':
